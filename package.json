@@ -1,0 +1,26 @@
+{
+  "name": "ais-os-demo",
+  "version": "1.0.0",
+  "description": "A free, MIT-licensed starter kit that turns Claude Code into your personal **AI Operating System (AIOS)**. Audience: anyone building automations — solopreneurs, small business operators, managers, creators, AI consultants. Pairs with a companion masterclass video.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nateherkai/AIS-OS.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/nateherkai/AIS-OS/issues"
+  },
+  "homepage": "https://github.com/nateherkai/AIS-OS#readme",
+  "dependencies": {
+    "playwright": "^1.60.0"
+  }
+}

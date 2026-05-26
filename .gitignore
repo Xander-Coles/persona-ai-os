@@ -1,8 +1,11 @@
 .env
 .env.local
+credentials.json
+token.json
 .DS_Store
 *.log
 __pycache__/
 node_modules/
+.slide-screenshots/
 .claude/settings.local.json
 audits/
