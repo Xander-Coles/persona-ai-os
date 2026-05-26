@@ -9,3 +9,5 @@ node_modules/
 .slide-screenshots/
 .claude/settings.local.json
 audits/
+.obsidian/
+.claude/scheduled_tasks.lock
