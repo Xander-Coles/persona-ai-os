@@ -14,13 +14,17 @@ Logs new job applications and status updates into Xander's Google Sheet job trac
 - **Gmail scan** — Claude searches Gmail for application confirmation emails
 - **Status update** — user reports a stage change (round invite, call scheduled, etc.)
 
-**Sheet ID:** Read from `$JOB_TRACKER_SHEET_ID` environment variable. If not set, ask the user to add it to `.env` and pause.
+**Required env vars** (all in `.env`):
+- `JOB_TRACKER_WEBHOOK_URL` — deployed Google Apps Script web app URL
+- `JOB_TRACKER_WEBHOOK_SECRET` — secret set in Script Properties
+
+If either is missing, stop and tell the user: "Add `JOB_TRACKER_WEBHOOK_URL` and `JOB_TRACKER_WEBHOOK_SECRET` to `.env`. Deploy `scripts/job-tracker-webhook.gs` as a web app in Google Apps Script to get the URL."
 
 ---
 
 ## Column Map
 
-The tracker has 24 columns (A–X). All `gws` commands use this order exactly:
+The tracker has 24 columns (A–X). Always write in this order:
 
 | Col | Field |
 |-----|-------|
@@ -68,44 +72,47 @@ If ambiguous, ask one clarifying question before proceeding.
 1. If the user provided a URL, fetch it with WebFetch and extract: Company Name, Role Title, Industry, Organization Size, Job URL.
 2. If the user pasted text, extract the same fields.
 3. Ask for any fields that couldn't be extracted. Always ask for **Interest (1–10)** — never infer it.
-4. Check for a duplicate before writing:
+4. Check for duplicates by reading the current sheet:
    ```bash
-   gws sheets +read --spreadsheet "$JOB_TRACKER_SHEET_ID" --range "Sheet1!A:B" --format csv
+   source .env 2>/dev/null || true
+   curl -s "${JOB_TRACKER_WEBHOOK_URL}?secret=${JOB_TRACKER_WEBHOOK_SECRET}"
    ```
-   If a row with the same Company + Role Title exists, alert the user and ask whether to add anyway or update the existing row instead.
+   Parse the returned JSON `rows` array. If a row with the same Company + Role Title exists (columns 0 and 1, 0-indexed), alert the user and ask whether to add anyway or update the existing row.
 5. If clear to add, build the row (fill blanks with empty strings) and append:
    ```bash
-   gws sheets spreadsheets values append \
-     --params '{"spreadsheetId":"'"$JOB_TRACKER_SHEET_ID"'","range":"Job Apps!A1","valueInputOption":"USER_ENTERED","insertDataOption":"INSERT_ROWS"}' \
-     --json '{"values":[["Company","Role","Y","Industry","Size","URL","8","2026-05-26","Applied","","","","","","","","","","","","","","",""]]}'
+   source .env 2>/dev/null || true
+   curl -s -X POST "$JOB_TRACKER_WEBHOOK_URL" \
+     -H "Content-Type: application/json" \
+     -d "{\"secret\":\"$JOB_TRACKER_WEBHOOK_SECRET\",\"rows\":[[\"Company\",\"Role\",\"Y\",\"Industry\",\"Size\",\"URL\",\"8\",\"2026-05-31\",\"Applied\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"]]}"
    ```
-   Note: always target `Job Apps!A1` explicitly — the `+append` helper picks the first tab alphabetically and will write to the wrong sheet.
-   Applied? = "Y" if the user has applied, "N" if they're just tracking it.
-6. After writing, compute the priority score (see Step 4) and output the result block (see Step 5).
+   Replace placeholder values with actual extracted data. Use empty strings for unknown fields.
+6. Check the response: `{"success":true,"appended":1}` means it worked. If you see `{"error":...}`, report the error to the user.
+7. After a successful write, compute the priority score (Step 3) and output the result block (Step 4).
 
 ---
 
 ## Step 2B: New Application — Gmail Scan Mode
 
-Search Gmail for application confirmation emails from the last 7 days:
+Use the available Gmail MCP tools to search for application confirmation emails:
 
-```bash
-gws gmail +triage \
-  --query 'subject:(application received OR application submitted OR thank you for applying OR we received your application) newer_than:7d' \
-  --max 30 --format json
-```
+1. **Search Gmail** using the `mcp__claude_ai_Gmail__search_threads` tool with query:
+   ```
+   subject:(application received OR application submitted OR thank you for applying OR we received your application) newer_than:7d
+   ```
+   Limit to 30 results.
 
-For each result:
-1. Read the full message body to extract Company Name and Role Title:
+2. For each thread, use `mcp__claude_ai_Gmail__get_thread` to read the full body and extract Company Name, Role Title, and Date Applied.
+
+3. **Read the current sheet** to find unlogged entries:
    ```bash
-   gws gmail +read --help   # use the message ID from triage output
+   source .env 2>/dev/null || true
+   curl -s "${JOB_TRACKER_WEBHOOK_URL}?secret=${JOB_TRACKER_WEBHOOK_SECRET}"
    ```
-2. Cross-reference against the current sheet to find unlogged confirmations:
-   ```bash
-   gws sheets +read --spreadsheet "$JOB_TRACKER_SHEET_ID" --range "Sheet1!A:B" --format csv
-   ```
-3. For each unlogged email, extract: Company, Role, Date Applied (from email date), URL (if in email).
-4. Present a batch summary to the user before writing:
+   Cross-reference the returned `rows` array against the Gmail results. Filter to only threads not already in the sheet (match on Company Name in column A).
+
+4. If no new applications found, tell the user and suggest broadening the date range or checking Gmail manually.
+
+5. Present a batch summary before writing:
    ```
    Found 3 unlogged applications:
    1. Salesforce — Account Executive (May 22)
@@ -114,13 +121,16 @@ For each result:
 
    For each: what's your Interest score (1–10)? Any networking contacts to note?
    ```
-5. After the user responds, append all confirmed rows in one call using the raw API (not `+append` — it targets the wrong tab):
+
+6. After the user responds, append all confirmed rows in one call per row (or batched if multiple):
    ```bash
-   gws sheets spreadsheets values append \
-     --params '{"spreadsheetId":"'"$JOB_TRACKER_SHEET_ID"'","range":"Job Apps!A1","valueInputOption":"USER_ENTERED","insertDataOption":"INSERT_ROWS"}' \
-     --json '{"values":[[ ... ],[ ... ]]}'
+   source .env 2>/dev/null || true
+   curl -s -X POST "$JOB_TRACKER_WEBHOOK_URL" \
+     -H "Content-Type: application/json" \
+     -d "{\"secret\":\"$JOB_TRACKER_WEBHOOK_SECRET\",\"rows\":[[\"Company\",\"Role\",\"Y\",\"Industry\",\"Size\",\"URL\",\"8\",\"2026-05-22\",\"Applied\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"],[...]]}"
    ```
-6. Compute and display priority scores for all added roles.
+
+7. Compute and display priority scores for all added roles.
 
 ---
 
@@ -130,24 +140,34 @@ Triggered when the user reports a stage change (round invite, scheduled call, no
 
 1. Read the full sheet to find the matching row:
    ```bash
-   gws sheets +read --spreadsheet "$JOB_TRACKER_SHEET_ID" --range "Sheet1!A:X" --format csv
+   source .env 2>/dev/null || true
+   curl -s "${JOB_TRACKER_WEBHOOK_URL}?secret=${JOB_TRACKER_WEBHOOK_SECRET}"
    ```
-2. Match by Company Name (and Role Title if ambiguous). If multiple matches, ask the user to clarify.
+   Parse the `rows` array. Row index 0 is the header. The target row number in the sheet = array index + 1 (1-indexed).
+
+2. Match by Company Name (column A) and Role Title (column B) if ambiguous. If multiple matches, ask the user to clarify.
+
 3. Identify which column(s) to update based on the stage:
-   - Round 2 invite → col W (2nd Round) = date
-   - Round 3 invite → col X (3rd Round) = date
-   - Phone screen → col V (1st Round) = date
-   - Call scheduled → col T (Call scheduled with who?) + col S (Networking call date)
-   - Reached out → col P (Reach out date)
-   - Follow-up sent → col R (Follow-up date)
-   - Status change (rejected, offer, etc.) → col I (Status)
-4. Determine the row number (1-indexed, row 1 = header). Update that specific cell range:
+   - Round 2 invite → col W (index 22)
+   - Round 3 invite → col X (index 23)
+   - Phone screen → col V (index 21)
+   - Call scheduled → col T (index 19) + col S (index 18)
+   - Reached out → col P (index 15)
+   - Follow-up sent → col R (index 17)
+   - Status change (rejected, offer, etc.) → col I (index 8)
+
+4. Convert to A1 notation (e.g., row 5, col I = "I5") and update:
    ```bash
-   gws sheets spreadsheets values update \
-     --params '{"spreadsheetId": "SHEET_ID", "range": "Sheet1!W5", "valueInputOption": "USER_ENTERED"}' \
-     --json '{"values": [["2026-05-26"]]}'
+   source .env 2>/dev/null || true
+   curl -s -X POST "$JOB_TRACKER_WEBHOOK_URL" \
+     -H "Content-Type: application/json" \
+     -d "{\"secret\":\"$JOB_TRACKER_WEBHOOK_SECRET\",\"action\":\"update\",\"range\":\"I5\",\"values\":[[\"Rejected\"]]}"
    ```
-5. After writing, output the result block with updated next action.
+   Replace `"I5"` and `"Rejected"` with the actual cell reference and value.
+
+5. Check the response for `{"success":true,...}` before reporting success.
+
+6. After writing, output the result block with updated next action.
 
 ---
 
@@ -177,26 +197,7 @@ Compute after every write. Score = Role Fit + Interest + Urgency + Company Quali
 
 ---
 
-## Step 4: Next Action Recommendation
-
-After every write, evaluate the row and recommend one next action:
-
-| Condition | Recommendation |
-|-----------|---------------|
-| Cols J–L all empty | "Research your network on LinkedIn — do you know anyone at [Company]?" |
-| Cols J–L filled, col P (Reach out date) empty | "Reach out to [name] today." |
-| Col P filled, col R (Follow-up date) empty | "Schedule a follow-up for [6 days from reach-out date]." |
-| Col R date is past | "Follow up now — it's been [N] days since your last contact." |
-| Cols J–L empty, cols M–O empty | "Identify a cold contact: check LinkedIn for someone on the team, hiring manager, or recruiter." |
-| 1st Round filled, 2nd Round empty | "Prep for 2nd round — review call notes and research the company deeper." |
-| Status = Offer | "You have an offer — log the details and decide next steps." |
-| Status = Rejected | "Closed. Consider a warm follow-up if the conversation was strong." |
-
-Show only the single most relevant recommendation.
-
----
-
-## Step 5: Output Format
+## Step 4: Output Format
 
 After every successful write, output:
 
@@ -207,9 +208,22 @@ Priority Score: [X.X / 10]  (Role Fit: X | Interest: X | Urgency: X | Company: X
 Next Action: [recommendation]
 ```
 
-For Gmail batch mode, show one row per logged application, then a summary at the bottom:
+**Next Action logic — show only the single most relevant:**
+
+| Condition | Recommendation |
+|-----------|---------------|
+| Cols J–L all empty | "Research your network on LinkedIn — do you know anyone at [Company]?" |
+| Cols J–L filled, col P empty | "Reach out to [name] today." |
+| Col P filled, col R empty | "Schedule a follow-up for [6 days from reach-out date]." |
+| Col R date is past | "Follow up now — it's been [N] days since your last contact." |
+| Cols J–L empty, cols M–O empty | "Identify a cold contact: check LinkedIn for someone on the team, hiring manager, or recruiter." |
+| 1st Round filled, 2nd Round empty | "Prep for 2nd round — review call notes and research the company deeper." |
+| Status = Offer | "You have an offer — log the details and decide next steps." |
+| Status = Rejected | "Closed. Consider a warm follow-up if the conversation was strong." |
+
+For Gmail batch mode, show one row per logged application, then:
 ```
-Added 3 applications. Highest priority: [Company] — [Role] ([score]/10)
+Added [N] applications. Highest priority: [Company] — [Role] ([score]/10)
 ```
 
 ---
@@ -219,6 +233,7 @@ Added 3 applications. Highest priority: [Company] — [Role] ([score]/10)
 - Never fill networking columns (J, K, L, M, N, O) with guesses. Only use what the user explicitly provides.
 - Never set Applied? = "Y" automatically. Ask if it's unclear.
 - Interest score must always come from the user — never infer it.
-- If `$JOB_TRACKER_SHEET_ID` is not set, stop and tell the user: "Add your Sheet ID to `.env` as `JOB_TRACKER_SHEET_ID=<your-sheet-id>`. You can find the ID in the URL of your Google Sheet."
-- For Gmail scan, if the triage returns 0 matches, tell the user and suggest broadening the date range or checking Gmail manually.
-- Row numbers are 1-indexed in gws. Row 1 = header. Always read the sheet first to find the correct row number before updating.
+- Row numbers are 1-indexed in the sheet. Row 1 = header. Array index 0 in the `rows` response = header row. Target row number = array index + 1.
+- The `curl` update range uses the sheet's column letters (A–X), not 0-indexed numbers.
+- If `curl` returns an error or non-JSON, report it verbatim to the user rather than silently failing.
+- The doGet endpoint requires the secret as a query param. The doPost endpoint requires it in the JSON body.
